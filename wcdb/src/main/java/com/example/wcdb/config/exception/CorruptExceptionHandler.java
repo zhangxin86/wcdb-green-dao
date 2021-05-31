@@ -4,6 +4,7 @@ import android.util.Log;
 
 import com.example.wcdb.config.DbHelper;
 import com.tencent.wcdb.database.SQLiteDatabaseCorruptException;
+import com.tencent.wcdb.database.SQLiteDiskIOException;
 
 public class CorruptExceptionHandler implements Thread.UncaughtExceptionHandler{
     private static final String TAG = CorruptExceptionHandler.class.getName();
@@ -22,7 +23,8 @@ public class CorruptExceptionHandler implements Thread.UncaughtExceptionHandler{
 
     @Override
     public void uncaughtException(Thread t, Throwable e) {
-        if (e instanceof SQLiteDatabaseCorruptException ||
+        if (e instanceof SQLiteDiskIOException ||
+                e instanceof SQLiteDatabaseCorruptException ||
                 (e instanceof  IllegalStateException && e.getMessage() != null &&
                         e.getMessage().contains("attempt to re-open an already-closed object"))) {
             Log.e(TAG, "数据库错误发生：" + e.getMessage());

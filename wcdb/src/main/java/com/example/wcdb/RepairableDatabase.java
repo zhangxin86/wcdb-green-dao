@@ -8,7 +8,6 @@ import com.example.wcdb.config.DbConfig;
 import com.example.wcdb.config.DbHelper;
 import com.example.wcdb.config.database.DaoMaster;
 import com.example.wcdb.config.database.DaoSession;
-import com.example.wcdb.config.database.WCDBDatabase;
 import com.example.wcdb.config.database.WCDBOpenHelper;
 import com.example.wcdb.config.exception.CorruptListener;
 import com.tencent.wcdb.database.SQLiteDatabase;
@@ -27,7 +26,6 @@ import static com.example.wcdb.config.DbHelper.ERROR_HANDLER;
 import static com.example.wcdb.config.DbHelper.GREEN_DAO_CALLBACK;
 import static com.example.wcdb.config.DbHelper.SINGLE_THREAD_POOL_EXECUTOR;
 import static com.example.wcdb.config.DbHelper.SQLITE_CIPHER_SPEC;
-import static com.example.wcdb.config.DbHelper.checkIsCorrupted;
 import static com.example.wcdb.config.DbHelper.checkIsInit;
 import static com.example.wcdb.config.DbHelper.getBackupPath;
 import static com.example.wcdb.config.DbHelper.getDbPath;
@@ -77,25 +75,24 @@ public class RepairableDatabase {
      * 保存master信息表，与{@link #repairDb}配合使用
      * @param callback 执行回调
      */
-    public void saveMaster(SQLiteDatabase sqlite, OperateCallback callback) {
+    public void saveMaster(OperateCallback callback) {
         SINGLE_THREAD_POOL_EXECUTOR.execute(() -> {
+            SQLiteDatabase sqlite;
             try {
-                checkIsCorrupted();
+                sqlite = getWcdbSqlite();
             } catch (Exception e) {
                 //数据库master表已损坏
-                callback.onError(OperateCallback.ERROR_MAG_DB_SAVE_MASTER);
+                errorCallback(callback, OperateCallback.ERROR_MAG_DB_SAVE_MASTER);
                 return;
             }
             boolean result = RepairKit.MasterInfo.save(sqlite, getMasterInfoSavePath(new File(sqlite.getPath())),
                     mDbConfig.getBackupPassword());
             Log.d(TAG, "数据库备份结果：" + result);
-            runOnUiThread(() -> {
-                if (result) {
-                    successCallback(callback);
-                } else {
-                    errorCallback(callback, OperateCallback.ERROR_MAG_DB_SAVE_MASTER);
-                }
-            });
+            if (result) {
+                successCallback(callback);
+            } else {
+                errorCallback(callback, OperateCallback.ERROR_MAG_DB_SAVE_MASTER);
+            }
         });
     }
 
@@ -137,7 +134,10 @@ public class RepairableDatabase {
             try {
                 repair[0] = new RepairKit(dbFile.getPath(), mDbConfig.getDbPassword(),
                         SQLITE_CIPHER_SPEC, master);
-                if (newDbFile.exists()) { newDbFile.delete(); }
+                if (newDbFile.exists() && !newDbFile.delete()) {
+                    errorCallback(callback, OperateCallback.ERROR_MAG_DB_DELETE_TEMP_ERROR);
+                    return;
+                }
                 SQLiteDatabase newDb = SQLiteDatabase.openOrCreateDatabase(newDbFile,
                         mDbConfig.getDbPassword(), SQLITE_CIPHER_SPEC, null, ERROR_HANDLER);
                 repair[0].setCallback((table, root, cursor) -> {
@@ -147,19 +147,21 @@ public class RepairableDatabase {
                 });
                 int result = repair[0].output(newDb, 0);
                 if (result != RepairKit.RESULT_OK && result != RepairKit.RESULT_CANCELED) {
-                    throw new SQLiteException(OperateCallback.ERROR_MAG_DB_REPAIR_OUTPUT_ERROR);
+                    errorCallback(callback, OperateCallback.ERROR_MAG_DB_REPAIR_OUTPUT_ERROR);
+                    return;
                 }
                 newDb.setVersion(DB_VERSION);
                 newDb.close();
                 repair[0].release();
                 repair[0] = null;
-                if (!dbFile.delete() || !newDbFile.renameTo(dbFile)) {
-                    throw new SQLiteException(OperateCallback.ERROR_MAG_DB_REPAIR_RENAME_ERROR);
+                if ((dbFile.exists() && !dbFile.delete()) || !newDbFile.renameTo(dbFile)) {
+                    errorCallback(callback, OperateCallback.ERROR_MAG_DB_RENAME_ERROR);
+                    return;
                 }
                 //修复成功，重置实例
                 initDb(DbHelper.mApplication, mDbConfig);
                 //保存master表
-                saveMaster((SQLiteDatabase) mDaoMater.getDatabase().getRawDatabase(), callback);
+                saveMaster(callback);
             } catch (Exception e) {
                 //修复失败
                 if (isNeedRecover) {
@@ -188,7 +190,7 @@ public class RepairableDatabase {
         checkIsInit();
         SQLiteDatabase sqlite;
         try {
-            sqlite = (SQLiteDatabase) mOpenHelper.getWritableDb().getRawDatabase();
+            sqlite = getWcdbSqlite();
             if (sqlite == null) {
                 errorCallback(callback, OperateCallback.ERROR_MAG_DB_UNINITIALIZED);
                 return Cancelable.emptyCancelable();
@@ -223,50 +225,44 @@ public class RepairableDatabase {
             return Cancelable.emptyCancelable();
         }
     }
+
     /**
      * 恢复数据库，与{@link #backupDb}配合使用
      * @param fatal true表示恢复过程中遇到错误，结束恢复过程，并回调callback的onCancel方法，false表示忽略错误，继续执行
      * @param callback 执行回调
      */
     public Cancelable recoverDb(boolean fatal, OperateCallback callback) {
-        checkIsInit();
-        File database = getDbPath(mDbConfig.getDbName());
-        File backupFile = new File(getBackupPath(database));
+        File dbFile = getDbPath(mDbConfig.getDbName());
+        File backupFile = new File(getBackupPath(dbFile));
+        final File newDbFile = getDbPath(mDbConfig.getDbName() + "-recover2");
         if (!backupFile.exists()) {
             errorCallback(callback, OperateCallback.ERROR_MAG_DB_RECOVER_NOT_BACKUP);
             return Cancelable.emptyCancelable();
         }
-        SQLiteDatabase sqlite;
-        try {
-            sqlite = (SQLiteDatabase) mOpenHelper.getWritableDb().getRawDatabase();
-        } catch (SQLiteDatabaseCorruptException | IllegalStateException e) {
-            //当前文件报异常，删除重建
-            if (database.exists() && !database.delete()) {
-                return Cancelable.emptyCancelable();
-            }
-            sqlite = SQLiteDatabase.openOrCreateDatabase(database,
-                    mDbConfig.getDbPassword(), SQLITE_CIPHER_SPEC, null, ERROR_HANDLER);
+        if (newDbFile.exists() && !newDbFile.delete()) {
+            errorCallback(callback, OperateCallback.ERROR_MAG_DB_DELETE_TEMP_ERROR);
         }
+        SQLiteDatabase newDb = SQLiteDatabase.openOrCreateDatabase(newDbFile,
+                mDbConfig.getDbPassword(), SQLITE_CIPHER_SPEC, null, ERROR_HANDLER);
         try {
-            RecoverKit recover = new RecoverKit(sqlite, backupFile.getPath(), mDbConfig.getBackupPassword());
+            RecoverKit recover = new RecoverKit(newDb, backupFile.getPath(), mDbConfig.getBackupPassword());
             SINGLE_THREAD_POOL_EXECUTOR.execute(() -> {
                 int result = recover.run(fatal);
-                runOnUiThread(() -> {
-                    switch (result) {
-                        case RecoverKit.RESULT_OK:
-                            //重置数据库实例
-                            initDb(DbHelper.mApplication, mDbConfig);
-                            saveMaster(getWcdbSqlite(), callback);
-                            break;
-                        case RecoverKit.RESULT_CANCELED:
-                            cancelCallback(callback);
-                            break;
-                        case RecoverKit.RESULT_FAILED:
-                            errorCallback(callback, OperateCallback.ERROR_MAG_DB_RECOVER_FAILED);
-                            break;
-                    }
-                });
+                if (result != RepairKit.RESULT_OK && result != RepairKit.RESULT_CANCELED) {
+                    errorCallback(callback, OperateCallback.ERROR_MAG_DB_RECOVER_FAILED);
+                    return;
+                }
+                newDb.setVersion(DB_VERSION);
+                newDb.close();
                 recover.release();
+                if ((dbFile.exists() && !dbFile.delete()) || !newDbFile.renameTo(dbFile)) {
+                    errorCallback(callback, OperateCallback.ERROR_MAG_DB_RENAME_ERROR);
+                    return;
+                }
+                //重置数据库实例
+                initDb(DbHelper.mApplication, mDbConfig);
+                //保存master表
+                saveMaster(callback);
             });
             return Cancelable.newInstance(recover);
         } catch (SQLiteException e) {
@@ -309,7 +305,8 @@ public class RepairableDatabase {
         String ERROR_MAG_DB_REPAIR_FILE_ERROR = "数据库修复操作失败，可能备份文件被破坏";
         String ERROR_MAG_DB_REPAIR_NOT_EXIST_MASTER_INFO = "数据库修复操作失败，不存在备份文件";
         String ERROR_MAG_DB_REPAIR_OUTPUT_ERROR = "数据库修复操作失败，无法将数据输出到新数据库";
-        String ERROR_MAG_DB_REPAIR_RENAME_ERROR = "数据库修复操作失败，无法重命名";
+        String ERROR_MAG_DB_RENAME_ERROR = "数据库操作失败，无法重命名";
+        String ERROR_MAG_DB_DELETE_TEMP_ERROR = "数据库操作失败，无法删除缓存文件";
         String ERROR_MAG_DB_BACKUP_FAILED = "数据库备份操作失败";
         String ERROR_MAG_DB_BACKUP_FAILED_ERROR_FILE = "数据库备份操作失败，当前数据库文件已损坏";
         String ERROR_MAG_DB_RECOVER_FAILED = "数据库恢复操作失败";

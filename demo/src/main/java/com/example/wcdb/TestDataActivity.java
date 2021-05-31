@@ -39,17 +39,13 @@ public class TestDataActivity extends AppCompatActivity {
             }
             executor.execute(() -> {
                 UserDao userDao = daoSession.getUserDao();
-                List<User> users = new ArrayList<>();
-                for (int i = 0; i < 785; i++) {
-                    User user = new User();
-                    user.uid = getMaxId() + 1 + i;
-                    user.userId = String.valueOf(user.uid);
-                    user.userName = "testUser" + user.userId;
-                    user.age = 10;
-                    user.sex = "0";
-                    users.add(user);
-                }
-                userDao.insertInTx(users);
+                User user = new User();
+                user.uid = getMaxId() + 1;
+                user.userId = String.valueOf(user.uid);
+                user.userName = "testUser" + user.userId;
+                user.age = 10;
+                user.sex = "0";
+                userDao.insert(user);
                 setMsg("插入操作成功");
             });
         });

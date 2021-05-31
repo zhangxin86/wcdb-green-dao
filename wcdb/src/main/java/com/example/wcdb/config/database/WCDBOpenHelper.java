@@ -81,7 +81,7 @@ public class WCDBOpenHelper {
             WCDBDatabase wrappedDb = getWrappedDb(sqLiteDatabase);
             DaoMaster.createAllTables(wrappedDb, true);
             mCallback.onCreate(wrappedDb);
-            RepairableDatabase.getDatabase().saveMaster(sqLiteDatabase, new RepairableDatabase.OperateCallback() {
+            RepairableDatabase.getDatabase().saveMaster(new RepairableDatabase.OperateCallback() {
                 @Override
                 public void onSuccess() {
                     Log.d(TAG, "创建时备份成功");
@@ -102,7 +102,7 @@ public class WCDBOpenHelper {
         @Override
         public void onUpgrade(com.tencent.wcdb.database.SQLiteDatabase sqLiteDatabase, int oldVersion, int newVersion) {
             mCallback.onUpgrade(getWrappedDb(sqLiteDatabase), oldVersion, newVersion);
-            RepairableDatabase.getDatabase().saveMaster(sqLiteDatabase, new RepairableDatabase.OperateCallback() {
+            RepairableDatabase.getDatabase().saveMaster(new RepairableDatabase.OperateCallback() {
                 @Override
                 public void onSuccess() {
                     Log.d(TAG, "升级时备份成功");
